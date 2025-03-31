@@ -1,1 +1,1 @@
-# Projekt 2 z biometrii: †ęczówka
+# Projekt 2 z biometrii: Tęczówka
