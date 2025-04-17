@@ -1,4 +1,3 @@
-from Threshold import binarize
 from Morphology import erode, dilate
 from Contour import keep_largest_contour
 import os
@@ -81,7 +80,7 @@ def get_iris(image_raw, x, y, radius_pupil):
     # czyszczenie
     small_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     big_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    image = cv2.dilate(image_bin, big_kernel, iterations=9)
+    image = cv2.dilate(image_bin, big_kernel, iterations=12)
     image = cv2.erode(image, small_kernel, iterations=2)
     image = keep_largest_contour(image)
     image = cv2.erode(image, big_kernel, iterations=4)
@@ -421,3 +420,13 @@ def hamming_distance(code1, code2):
     if code1.shape != code2.shape:
         raise ValueError("Iris codes must have the same shape.")
     return np.sum(code1 != code2) / (code1.shape[0] * code1.shape[1])
+
+
+
+def binarize(grayscale_image, threshold):
+    h, w = grayscale_image.shape[0:2]
+    mean_intensity = np.sum(grayscale_image) / (h * w)
+    binary_image = np.where(grayscale_image > mean_intensity * threshold, 255, 0).astype(np.uint8)
+
+    
+    return binary_image
