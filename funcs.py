@@ -60,37 +60,27 @@ def get_iris(image_raw, x, y, radius_pupil):
     mask_pupil = np.zeros_like(image_raw)
     cv2.circle(mask_pupil, (x, y), radius_pupil, 255, thickness=-1)
 
-    # Step 2: Create a circular mask for the entire region (outer area)
     mask_outer = np.ones_like(image_raw) * 255
-    cv2.circle(mask_outer, (x, y), radius_pupil, 0, thickness=-1)  # Invert the mask to exclude pupil
+    cv2.circle(mask_outer, (x, y), radius_pupil, 0, thickness=-1)  
 
-    # Step 3: Mask the image with the outer region to get brightness outside the pupil
-    outer_region = cv2.bitwise_and(image_raw, image_raw, mask=mask_outer)
-
-    # Step 4: Calculate the mean brightness in the outer region (around the iris)
+    outer_region = cv2.bitwise_and(image_raw, image_raw, mask=mask_outer)    
     mean_brightness = np.mean(outer_region[mask_outer > 0])
 
-    # Step 5: Set a dynamic threshold based on the mean brightness of the outer region
-    threshold = mean_brightness / 255 *1.22
-        # Relative thresholding
+    threshold = mean_brightness / 255 *1.25
 
-    # Step 6: Binarize using the dynamically calculated threshold
     image_bin = binarize(image_raw, threshold=threshold)
 
-    # czyszczenie
     small_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     big_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     image = cv2.dilate(image_bin, big_kernel, iterations=12)
-    image = cv2.erode(image, small_kernel, iterations=2)
+    image = cv2.erode(image, small_kernel, iterations=5)
     image = keep_largest_contour(image)
-    image = cv2.erode(image, big_kernel, iterations=4)
+    image = cv2.erode(image, big_kernel, iterations=2)
 
-    # projekcja
     binary_image = (image > 0).astype(np.uint8)
     horizontal_proj = np.sum(binary_image, axis=1)
     vertical_proj = np.sum(binary_image, axis=0)
 
-    # promień
     left_edge = np.min(np.where(vertical_proj < max(vertical_proj)))
     right_edge = np.max(np.where(vertical_proj < max(vertical_proj)))
     radius_horizontal = (right_edge - left_edge) // 2
@@ -101,7 +91,6 @@ def get_iris(image_raw, x, y, radius_pupil):
 
     radius_iris = (radius_horizontal + radius_vertical) // 2
 
-    # zaznaczenie środka i promienia
     line_width = image_bin.shape[1] // 128
     image_center = cv2.cvtColor(image_raw.copy(), cv2.COLOR_GRAY2BGR)
     image_center = cv2.circle(image_center, (x, y), radius_iris, (255, 0, 0), line_width)
@@ -111,7 +100,6 @@ def get_iris(image_raw, x, y, radius_pupil):
 
 
 def unwrap_iris(image, cx, cy, r_pupil, r_iris, num_angular_samples=None):
-    # Check if angle is in allowed ranges
     def angle_mask(theta_deg, mask_ranges):
         for start, end in mask_ranges:
             if start <= theta_deg <= end:

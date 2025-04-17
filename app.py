@@ -88,9 +88,9 @@ if uploaded_file is not None:
         distance = hamming_distance(code, code2)
         st.markdown(f"## Hamming distance: __{distance:.4f}__")
         # Display result
-        if distance < 0.22:
+        if distance < 0.229:
             st.success("The irises match!")
-        elif distance < 0.25:
+        elif distance < 0.24:
             st.warning("result inconclusive.")
         else:
             st.error("The irises do not match.")
