@@ -1,0 +1,4 @@
+- zmienić układ aplikacji - pokazywać kolorowe i czarnobiałe zdjęcia obok siebie itd
+- poprawić wykrywanie źrenicy i tęczówki na nowym datasecie - dobrać odpowiednie operacje morfologiczne
+- sprawko
+- kod tęczówki

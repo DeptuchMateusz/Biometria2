@@ -12,6 +12,7 @@ from scipy.ndimage import gaussian_filter1d
 import streamlit as st
 import numpy as np
 import cv2
+from math import pi
 
 
 def get_pupil(image_raw):
@@ -47,7 +48,7 @@ def get_pupil(image_raw):
     radius_pupil = (radius_horizontal + radius_vertical) // 2
 
     # zaznaczenie środka i promienia
-    line_width = image_bin.shape[1] // 64
+    line_width = image_bin.shape[1] // 128
     image_center = cv2.cvtColor(image_raw.copy(), cv2.COLOR_GRAY2BGR)
     image_center = cv2.circle(image_center, (x, y), radius_pupil, (255, 0, 0), line_width)
     image_center = cv2.circle(image_center, (x, y), 0, (255, 0, 0), line_width)
@@ -80,10 +81,10 @@ def get_iris(image_raw, x, y, radius_pupil):
     # czyszczenie
     small_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     big_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    image = cv2.dilate(image_bin, big_kernel, iterations=14)
+    image = cv2.dilate(image_bin, big_kernel, iterations=9)
     image = cv2.erode(image, small_kernel, iterations=2)
     image = keep_largest_contour(image)
-    image = cv2.erode(image, big_kernel, iterations=8)
+    image = cv2.erode(image, big_kernel, iterations=4)
 
     # projekcja
     binary_image = (image > 0).astype(np.uint8)
@@ -102,7 +103,7 @@ def get_iris(image_raw, x, y, radius_pupil):
     radius_iris = (radius_horizontal + radius_vertical) // 2
 
     # zaznaczenie środka i promienia
-    line_width = image_bin.shape[1] // 64
+    line_width = image_bin.shape[1] // 128
     image_center = cv2.cvtColor(image_raw.copy(), cv2.COLOR_GRAY2BGR)
     image_center = cv2.circle(image_center, (x, y), radius_iris, (255, 0, 0), line_width)
     image_center = cv2.circle(image_center, (x, y), 0, (255, 0, 0), line_width)
@@ -110,6 +111,219 @@ def get_iris(image_raw, x, y, radius_pupil):
     return image_center, (x, y), radius_iris
 
 
+def unwrap_iris(image, cx, cy, r_pupil, r_iris, num_angular_samples=None):
+    # Check if angle is in allowed ranges
+    def angle_mask(theta_deg, mask_ranges):
+        for start, end in mask_ranges:
+            if start <= theta_deg <= end:
+                return False
+        return True
+
+    # Angle cutouts per ring group
+    angle_masks = [
+        #[(0, 255), (285, 360)],  # rings 1-4
+        [(0, 75), (105, 360)],
+        [(0, 56.5), (123.5, 236.5), (303.5, 360)],  # rings 5-6
+        [(0, 45), (135, 225), (315, 360)],  # rings 7-8
+    ]
+
+    all_rings = []
+    max_width = 0  # max horizontal resolution
+
+    for i in range(8):
+        # Compute radial bounds
+        r_start = r_pupil + (r_iris - r_pupil) * i / 8
+        r_end = r_pupil + (r_iris - r_pupil) * (i + 1) / 8
+        ring_height = int(np.ceil(r_end - r_start))
+
+        # Select mask
+        if i < 4:
+            valid_ranges = angle_masks[0]
+        elif i < 6:
+            valid_ranges = angle_masks[1]
+        else:
+            valid_ranges = angle_masks[2]
+
+        samples = []
+
+        for r in np.linspace(r_start, r_end, ring_height):
+            num_points = int(np.ceil(2 * pi * r))
+            for t in range(num_points):
+                theta = 2 * pi * t / num_points
+                theta_deg = np.degrees(theta)
+
+                if not angle_mask(theta_deg % 360, valid_ranges):
+                    continue
+
+                x = int(round(cx + r * np.cos(theta)))
+                y = int(round(cy + r * np.sin(theta)))
+
+                if 0 <= x < image.shape[1] and 0 <= y < image.shape[0]:
+                    samples.append((theta_deg % 360, r, image[y, x]))
+
+        if not samples:
+            all_rings.append(np.zeros((ring_height, 1), dtype=image.dtype))
+            continue
+
+        # Sort by angle
+        samples = sorted(samples, key=lambda s: s[0])
+        theta_vals = np.array([s[0] for s in samples])
+        pixel_vals = np.array([s[2] for s in samples])
+
+        if num_angular_samples is None:
+            max_width = max(max_width, len(np.unique(theta_vals)))
+
+        all_rings.append((theta_vals, pixel_vals, ring_height))
+
+    if num_angular_samples is None:
+        num_angular_samples = max_width
+
+    unwrapped_image = []
+
+    for ring in all_rings:
+        if isinstance(ring, np.ndarray):
+            resized = cv2.resize(ring, (num_angular_samples, ring.shape[0]), interpolation=cv2.INTER_LINEAR)
+            unwrapped_image.append(resized)
+            continue
+
+        theta_vals, pixel_vals, height = ring
+
+        # Target angle sampling
+        target_theta = np.linspace(0, 360, num_angular_samples, endpoint=False)
+        interp_vals = np.interp(target_theta, theta_vals, pixel_vals)
+
+        # Repeat vertically
+        ring_img = np.tile(interp_vals[np.newaxis, :], (height, 1))
+        unwrapped_image.append(ring_img.astype(image.dtype))
+
+    # Stack all rings
+    full_unwrapped = np.vstack(unwrapped_image)
+
+    return full_unwrapped
+
+
+def draw_rings_with_cuts(image, cx, cy, r_pupil, r_iris, ring_color=(0, 255, 0), cut_color=(255, 0, 0), thickness=1):
+    """
+    Draws the edges of 8 iris rings (as green circles) and marks cutout angle arcs as red curved lines.
+    """
+    output = image.copy()
+
+    # Convert grayscale to color if needed
+    if len(output.shape) == 2:
+        output = cv2.cvtColor(output, cv2.COLOR_GRAY2BGR)
+
+    # Define cutout angle ranges
+    angle_masks = [
+        #[(255, 285)], 
+        [(75, 105)],                                 # Rings 1–4
+        [(56.5, 123.5), (236.5, 303.5)],             # Rings 5–6
+        [(45, 135), (225, 315)],                     # Rings 7–8
+    ]
+
+    for i in range(8):
+        r_start = r_pupil + (r_iris - r_pupil) * i / 8
+        r_end   = r_pupil + (r_iris - r_pupil) * (i + 1) / 8
+
+        # Draw outer and inner edges of the ring as green circles
+        cv2.circle(output, (int(cx), int(cy)), int(r_start), ring_color, thickness)
+        cv2.circle(output, (int(cx), int(cy)), int(r_end), ring_color, thickness)
+
+        # Select cutout angle ranges based on ring index
+        if i < 4:
+            cuts = angle_masks[0]
+        elif i < 6:
+            cuts = angle_masks[1]
+        else:
+            cuts = angle_masks[2]
+
+        # Draw red arc(s) for each cutout on both inner and outer edges
+        for (start_angle, end_angle) in cuts:
+            # Inner arc
+            cv2.ellipse(
+                output,
+                center=(int(cx), int(cy)),
+                axes=(int(r_start), int(r_start)),
+                angle=0,
+                startAngle=start_angle,
+                endAngle=end_angle,
+                color=cut_color,
+                thickness=thickness
+            )
+            # Outer arc
+            cv2.ellipse(
+                output,
+                center=(int(cx), int(cy)),
+                axes=(int(r_end), int(r_end)),
+                angle=0,
+                startAngle=start_angle,
+                endAngle=end_angle,
+                color=cut_color,
+                thickness=thickness
+            )
+
+    return output
+
+
+def unwrap_iris_with_masks(image, x, y, r_pupil, r_iris, height=64, width=512):
+    """
+    Unwraps iris region into a rectangular strip (height x width),
+    excluding angular segments (cutouts) specific to ring index.
+    """
+
+    # Define angle masks per group
+    angle_masks = [
+        #[(255, 285)],                                # Rings 1–4
+        [(75, 105)],
+        [(56.5, 123.5), (236.5, 303.5)],             # Rings 5–6
+        [(45, 135), (225, 315)]                      # Rings 7–8
+    ]
+
+    # Build normalized polar grid
+    theta = np.linspace(0, 2 * np.pi, width, endpoint=False)
+    r = np.linspace(0, 1, height)
+    r_grid, theta_grid = np.meshgrid(r, theta)
+
+    # Map each (r, θ) to a ring index (0–7)
+    ring_indices = np.floor(r_grid * 8).astype(int)
+    ring_indices[ring_indices >= 8] = 7  # Clamp to 7
+
+    # Convert θ to degrees [0, 360)
+    theta_deg_grid = np.degrees(theta_grid) % 360
+
+    # Create validity mask
+    mask = np.ones_like(theta_deg_grid, dtype=bool)
+    for i in range(8):
+        if i < 4:
+            blocked = angle_masks[0]
+        elif i < 6:
+            blocked = angle_masks[1]
+        else:
+            blocked = angle_masks[2]
+
+        for (start, end) in blocked:
+            invalid = (ring_indices == i) & (theta_deg_grid >= start) & (theta_deg_grid <= end)
+            mask[invalid] = False
+
+    # Compute sampling coordinates (interpolation from pupil to iris)
+    x_pupil = x + r_pupil * np.cos(theta_grid)
+    y_pupil = y + r_pupil * np.sin(theta_grid)
+    x_iris = x + r_iris * np.cos(theta_grid)
+    y_iris = y + r_iris * np.sin(theta_grid)
+
+    x_coords = (1 - r_grid) * x_pupil + r_grid * x_iris
+    y_coords = (1 - r_grid) * y_pupil + r_grid * y_iris
+
+    # Clip to image boundaries
+    x_coords = np.clip(x_coords, 0, image.shape[1] - 1).astype(np.float32)
+    y_coords = np.clip(y_coords, 0, image.shape[0] - 1).astype(np.float32)
+
+    # Sample using bilinear interpolation
+    sampled = cv2.remap(image, x_coords, y_coords, interpolation=cv2.INTER_LINEAR)
+
+    # Apply angular cutout mask
+    sampled[~mask] = 0  # or 255 or np.nan — you decide
+
+    return sampled.T
 
 
 def normalize_iris(image, x, y, r_pupil, r_iris, height=64, width=512):
