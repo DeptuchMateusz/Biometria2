@@ -1,18 +1,8 @@
-from Morphology import erode, dilate
-from Contour import keep_largest_contour
 import os
 import numpy as np
-import pandas as pd
 import cv2
-import matplotlib.pyplot as plt
 import streamlit as st
-from scipy.signal import convolve2d
-from scipy.ndimage import gaussian_filter1d
-import streamlit as st
-import numpy as np
-import cv2
 from funcs import *
-from Gabor import generate_iris_code
 
 st.set_page_config(page_title="Iris detection", page_icon="👁️")
 st.title("👁️ Iris detection and recognition")
@@ -38,11 +28,9 @@ if uploaded_file is not None:
         image_center_iris, (x, y), radius_iris = get_iris(image_raw, x, y, radius_pupil)
         st.image(image_center_iris, caption='Center and Radius Detection - iris', channels="BGR", use_container_width=True)
 
-    #norm = normalize_iris(image_raw, x, y, radius_pupil, radius_iris)
     unwrapped = unwrap_iris_with_masks(image=image_raw, x=x, y=y, r_pupil=radius_pupil, r_iris=radius_iris, height=512, width=2048)
     st.image(unwrapped, caption='Normalized Iris', channels="GRAY", use_container_width=True)
 
-    #code = iris_code(unwrapped, f=3)
     code = generate_iris_code(unwrapped)
     st.image(cv2.resize(code * 255, (code.shape[1] * 2, code.shape[0] * 8), interpolation=cv2.INTER_NEAREST), 
              caption='Iris Code', channels="GRAY", use_container_width=True)
@@ -73,16 +61,6 @@ if uploaded_file is not None:
         code2 = generate_iris_code(unwrapped2)
         st.image(cv2.resize(code2 * 255, (code2.shape[1] * 2, code2.shape[0] * 8), interpolation=cv2.INTER_NEAREST), 
              caption='Iris Code', channels="GRAY", use_container_width=True)
-
-
-        # norm2 = normalize_iris(image_raw2, x2, y2, radius_pupil2, radius_iris2)
-        # plt.imshow(norm2, cmap='gray')
-
-        # st.image(norm2, caption='Normalized Iris', channels="GRAY", use_container_width=True)
-        # code2 = iris_code(norm2, f=3)
-        # st.image(code2 * 255, caption='Iris Code', channels="GRAY", use_container_width=True)
-    
-
         
         # Calculate Hamming distance
         distance = hamming_distance(code, code2)

@@ -1,18 +1,28 @@
-from Morphology import erode, dilate
-from Contour import keep_largest_contour
 import os
 import numpy as np
-import pandas as pd
 import cv2
-import matplotlib.pyplot as plt
-import streamlit as st
-from scipy.signal import convolve2d
-from scipy.ndimage import gaussian_filter1d
-import streamlit as st
 import numpy as np
 import cv2
-from math import pi
 
+def binarize(grayscale_image, threshold):
+    h, w = grayscale_image.shape[0:2]
+    mean_intensity = np.sum(grayscale_image) / (h * w)
+    binary_image = np.where(grayscale_image > mean_intensity * threshold, 255, 0).astype(np.uint8)
+    
+    return binary_image
+
+def keep_largest_contour(image):
+    inverted = cv2.bitwise_not(image)
+    contours, _ = cv2.findContours(inverted, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    if contours:
+        biggest_contour = max(contours, key=cv2.contourArea)
+        result = np.ones_like(image) * 255
+        cv2.drawContours(result, [biggest_contour], -1, (0), thickness=cv2.FILLED)
+        
+        return result
+    
+    return image
 
 def get_pupil(image_raw):
     image_bin = binarize(image_raw, threshold=0.22)
@@ -98,124 +108,26 @@ def get_iris(image_raw, x, y, radius_pupil):
 
     return image_center, (x, y), radius_iris
 
-
-def unwrap_iris(image, cx, cy, r_pupil, r_iris, num_angular_samples=None):
-    def angle_mask(theta_deg, mask_ranges):
-        for start, end in mask_ranges:
-            if start <= theta_deg <= end:
-                return False
-        return True
-
-    # Angle cutouts per ring group
-    angle_masks = [
-        #[(0, 255), (285, 360)],  # rings 1-4
-        [(0, 75), (105, 360)],
-        [(0, 56.5), (123.5, 236.5), (303.5, 360)],  # rings 5-6
-        [(0, 45), (135, 225), (315, 360)],  # rings 7-8
-    ]
-
-    all_rings = []
-    max_width = 0  # max horizontal resolution
-
-    for i in range(8):
-        # Compute radial bounds
-        r_start = r_pupil + (r_iris - r_pupil) * i / 8
-        r_end = r_pupil + (r_iris - r_pupil) * (i + 1) / 8
-        ring_height = int(np.ceil(r_end - r_start))
-
-        # Select mask
-        if i < 4:
-            valid_ranges = angle_masks[0]
-        elif i < 6:
-            valid_ranges = angle_masks[1]
-        else:
-            valid_ranges = angle_masks[2]
-
-        samples = []
-
-        for r in np.linspace(r_start, r_end, ring_height):
-            num_points = int(np.ceil(2 * pi * r))
-            for t in range(num_points):
-                theta = 2 * pi * t / num_points
-                theta_deg = np.degrees(theta)
-
-                if not angle_mask(theta_deg % 360, valid_ranges):
-                    continue
-
-                x = int(round(cx + r * np.cos(theta)))
-                y = int(round(cy + r * np.sin(theta)))
-
-                if 0 <= x < image.shape[1] and 0 <= y < image.shape[0]:
-                    samples.append((theta_deg % 360, r, image[y, x]))
-
-        if not samples:
-            all_rings.append(np.zeros((ring_height, 1), dtype=image.dtype))
-            continue
-
-        # Sort by angle
-        samples = sorted(samples, key=lambda s: s[0])
-        theta_vals = np.array([s[0] for s in samples])
-        pixel_vals = np.array([s[2] for s in samples])
-
-        if num_angular_samples is None:
-            max_width = max(max_width, len(np.unique(theta_vals)))
-
-        all_rings.append((theta_vals, pixel_vals, ring_height))
-
-    if num_angular_samples is None:
-        num_angular_samples = max_width
-
-    unwrapped_image = []
-
-    for ring in all_rings:
-        if isinstance(ring, np.ndarray):
-            resized = cv2.resize(ring, (num_angular_samples, ring.shape[0]), interpolation=cv2.INTER_LINEAR)
-            unwrapped_image.append(resized)
-            continue
-
-        theta_vals, pixel_vals, height = ring
-
-        # Target angle sampling
-        target_theta = np.linspace(0, 360, num_angular_samples, endpoint=False)
-        interp_vals = np.interp(target_theta, theta_vals, pixel_vals)
-
-        # Repeat vertically
-        ring_img = np.tile(interp_vals[np.newaxis, :], (height, 1))
-        unwrapped_image.append(ring_img.astype(image.dtype))
-
-    # Stack all rings
-    full_unwrapped = np.vstack(unwrapped_image)
-
-    return full_unwrapped
-
-
 def draw_rings_with_cuts(image, cx, cy, r_pupil, r_iris, ring_color=(0, 255, 0), cut_color=(255, 0, 0), thickness=1):
-    """
-    Draws the edges of 8 iris rings (as green circles) and marks cutout angle arcs as red curved lines.
-    """
+
     output = image.copy()
 
-    # Convert grayscale to color if needed
     if len(output.shape) == 2:
         output = cv2.cvtColor(output, cv2.COLOR_GRAY2BGR)
 
-    # Define cutout angle ranges
     angle_masks = [
-        #[(255, 285)], 
-        [(75, 105)],                                 # Rings 1–4
-        [(56.5, 123.5), (236.5, 303.5)],             # Rings 5–6
-        [(45, 135), (225, 315)],                     # Rings 7–8
+        [(75, 105)],
+        [(56.5, 123.5), (236.5, 303.5)],
+        [(45, 135), (225, 315)]
     ]
 
     for i in range(8):
         r_start = r_pupil + (r_iris - r_pupil) * i / 8
         r_end   = r_pupil + (r_iris - r_pupil) * (i + 1) / 8
 
-        # Draw outer and inner edges of the ring as green circles
         cv2.circle(output, (int(cx), int(cy)), int(r_start), ring_color, thickness)
         cv2.circle(output, (int(cx), int(cy)), int(r_end), ring_color, thickness)
 
-        # Select cutout angle ranges based on ring index
         if i < 4:
             cuts = angle_masks[0]
         elif i < 6:
@@ -223,9 +135,7 @@ def draw_rings_with_cuts(image, cx, cy, r_pupil, r_iris, ring_color=(0, 255, 0),
         else:
             cuts = angle_masks[2]
 
-        # Draw red arc(s) for each cutout on both inner and outer edges
         for (start_angle, end_angle) in cuts:
-            # Inner arc
             cv2.ellipse(
                 output,
                 center=(int(cx), int(cy)),
@@ -236,7 +146,7 @@ def draw_rings_with_cuts(image, cx, cy, r_pupil, r_iris, ring_color=(0, 255, 0),
                 color=cut_color,
                 thickness=thickness
             )
-            # Outer arc
+            
             cv2.ellipse(
                 output,
                 center=(int(cx), int(cy)),
@@ -250,34 +160,23 @@ def draw_rings_with_cuts(image, cx, cy, r_pupil, r_iris, ring_color=(0, 255, 0),
 
     return output
 
-
 def unwrap_iris_with_masks(image, x, y, r_pupil, r_iris, height=64, width=512):
-    """
-    Unwraps iris region into a rectangular strip (height x width),
-    excluding angular segments (cutouts) specific to ring index.
-    """
 
-    # Define angle masks per group
     angle_masks = [
-        #[(255, 285)],                                # Rings 1–4
         [(75, 105)],
-        [(56.5, 123.5), (236.5, 303.5)],             # Rings 5–6
-        [(45, 135), (225, 315)]                      # Rings 7–8
+        [(56.5, 123.5), (236.5, 303.5)],
+        [(45, 135), (225, 315)]
     ]
 
-    # Build normalized polar grid
     theta = np.linspace(0, 2 * np.pi, width, endpoint=False)
     r = np.linspace(0, 1, height)
     r_grid, theta_grid = np.meshgrid(r, theta)
 
-    # Map each (r, θ) to a ring index (0–7)
     ring_indices = np.floor(r_grid * 8).astype(int)
-    ring_indices[ring_indices >= 8] = 7  # Clamp to 7
+    ring_indices[ring_indices >= 8] = 7
 
-    # Convert θ to degrees [0, 360)
     theta_deg_grid = np.degrees(theta_grid) % 360
 
-    # Create validity mask
     mask = np.ones_like(theta_deg_grid, dtype=bool)
     for i in range(8):
         if i < 4:
@@ -291,7 +190,6 @@ def unwrap_iris_with_masks(image, x, y, r_pupil, r_iris, height=64, width=512):
             invalid = (ring_indices == i) & (theta_deg_grid >= start) & (theta_deg_grid <= end)
             mask[invalid] = False
 
-    # Compute sampling coordinates (interpolation from pupil to iris)
     x_pupil = x + r_pupil * np.cos(theta_grid)
     y_pupil = y + r_pupil * np.sin(theta_grid)
     x_iris = x + r_iris * np.cos(theta_grid)
@@ -300,121 +198,98 @@ def unwrap_iris_with_masks(image, x, y, r_pupil, r_iris, height=64, width=512):
     x_coords = (1 - r_grid) * x_pupil + r_grid * x_iris
     y_coords = (1 - r_grid) * y_pupil + r_grid * y_iris
 
-    # Clip to image boundaries
     x_coords = np.clip(x_coords, 0, image.shape[1] - 1).astype(np.float32)
     y_coords = np.clip(y_coords, 0, image.shape[0] - 1).astype(np.float32)
 
-    # Sample using bilinear interpolation
     sampled = cv2.remap(image, x_coords, y_coords, interpolation=cv2.INTER_LINEAR)
 
-    # Apply angular cutout mask
-    sampled[~mask] = 0  # or 255 or np.nan — you decide
+    sampled[~mask] = 0
 
     return sampled.T
 
+def build_gabor_kernel(ksize, sigma, theta, lambd, gamma, psi=0):
 
-def normalize_iris(image, x, y, r_pupil, r_iris, height=64, width=512):
-    theta = np.linspace(0, 2 * np.pi, width)
-    r = np.linspace(0, 1, height)
+    if isinstance(ksize, int):
+        kx = ky = ksize
+    else:
+        kx, ky = ksize
 
-    # Create grid for polar coords
-    r_grid, theta_grid = np.meshgrid(r, theta)
+    x_max = kx // 2
+    y_max = ky // 2
+    x = np.linspace(-x_max, x_max, kx)
+    y = np.linspace(-y_max, y_max, ky)
+    xv, yv = np.meshgrid(x, y)
 
-    # Interpolate from pupil to iris boundary
-    x_pupil = x + r_pupil * np.cos(theta_grid)
-    y_pupil = y + r_pupil * np.sin(theta_grid)
-    x_iris = x + r_iris * np.cos(theta_grid)
-    y_iris = y + r_iris * np.sin(theta_grid)
+    x_theta = xv * np.cos(theta) + yv * np.sin(theta)
+    y_theta = -xv * np.sin(theta) + yv * np.cos(theta)
 
-    # Linear interpolation between pupil and iris
-    x_coords = (1 - r_grid) * x_pupil + r_grid * x_iris
-    y_coords = (1 - r_grid) * y_pupil + r_grid * y_iris
+    gauss = np.exp(- (x_theta**2 + (gamma**2) * y_theta**2) / (2 * sigma**2))
 
-    # Map coordinates to image
-    x_coords = np.clip(x_coords, 0, image.shape[1] - 1).astype(np.float32)
-    y_coords = np.clip(y_coords, 0, image.shape[0] - 1).astype(np.float32)
+    sinus = np.exp(1j * (2 * np.pi * x_theta / lambd + psi))
 
-    # Remap image using polar coords
-    normalized = cv2.remap(image, x_coords, y_coords, cv2.INTER_LINEAR)
+    kernel = gauss * sinus
+    kernel_real = np.real(kernel)
+    kernel_imag = np.imag(kernel)
+    return kernel_real, kernel_imag
 
-    return normalized.T # transpose to get (height x width)
+def generate_iris_code(unwrapped_iris, 
+                       ksize=31, sigma=4.0, theta=0, lambd=10.0, gamma=0.5, psi=0,
+                       n_rows=8, n_cols=128):
 
+    height, width = unwrapped_iris.shape
+    block_h = height // n_rows
+    valid_mask = unwrapped_iris > 0
 
-def gabor_wavelet_1d(size=31, f=3):
-        sigma = 0.5 * np.pi * f
-        x = np.linspace(-size // 2, size // 2, size)
-        gabor = np.exp(-x**2 / (2 * sigma**2)) * np.cos(2 * np.pi * f * x)
-        return gabor
+    ker_real, ker_imag = build_gabor_kernel(ksize, sigma, theta, lambd, gamma, psi)
 
-    # def gabor_filter(size=31, f=3, orientation=0.0):
-    #     sigma = 0.5 * np.pi * f
-    #     x = np.linspace(-size // 2, size // 2, size)
-    #     y = np.linspace(-size // 2, size // 2, size)
-    #     x, y = np.meshgrid(x, y)
-    #     x_theta = x * np.cos(orientation) + y * np.sin(orientation)
-    #     y_theta = -x * np.sin(orientation) + y * np.cos(orientation)
+    iris_bits = np.zeros((n_rows, n_cols, 2), dtype=int)
 
-    #     gb = np.exp(-(x_theta**2 + y_theta**2) / (2 * sigma**2)) * \
-    #          np.cos(2 * np.pi * x_theta * f)
+    for row in range(n_rows):
+        y0 = row * block_h
+        y1 = y0 + block_h
+        band = unwrapped_iris[y0:y1, :]
+        mask_band = valid_mask[y0:y1, :]
 
-    #     return gb
+        col_valid = np.sum(mask_band, axis=0)
+        total_valid = np.sum(col_valid) / n_cols
 
-def iris_code(normalized_iris, num_strips=8, f =3):
-    num_strips = num_strips + 2 
-    height, width = normalized_iris.shape
-    strip_height = height // num_strips
-    iris_code = []
+        blocks = []
+        acc = 0
+        start = 0
+        for x in range(width):
+            acc += col_valid[x]
+            if acc >= total_valid or x == width-1:
+                blocks.append((start, x+1))
+                start = x+1
+                acc = 0
+        if len(blocks) > n_cols:
+            blocks = blocks[:n_cols]
+        while len(blocks) < n_cols:
+            blocks.append(blocks[-1])
 
-    # gabor = gabor_filter(size=31, f = f, orientation=0)
-    gabor = gabor_wavelet_1d(size=31, f=f)
+        for i, (xs, xe) in enumerate(blocks):
+            seg = band[:, xs:xe]
+            seg_mask = mask_band[:, xs:xe]
+            if np.sum(seg_mask) == 0:
+                continue
 
-    for i in range(1, num_strips - 1):  # pomijamy górny i dolny pasek
-        start_row = i * strip_height
-        end_row = (i + 1) * strip_height
-        strip = normalized_iris[start_row:end_row, :]
+            resp_real = cv2.filter2D(seg.astype(float), -1, ker_real)
+            resp_imag = cv2.filter2D(seg.astype(float), -1, ker_imag)
 
-        rect_width = strip.shape[1] // 128
-        one_d_strip = []
+            phase = np.arctan2(resp_imag, resp_real)
+            mean_phase = np.mean(phase[seg_mask])
 
-        for j in range(128):
-            start_col = j * rect_width
-            end_col = (j + 1) * rect_width
-            segment = strip[:, start_col:end_col]
+            iris_bits[row, i, 0] = int(mean_phase > 0)
+            iris_bits[row, i, 1] = int(np.abs(mean_phase) > np.pi/2)
 
-            # Uśrednianie wzdłuż kolumny (czyli kierunek radialny)
-            mean_intensity = segment.mean(axis=0)
-            # Gaussowskie wygładzenie – radialne
-            smoothed = gaussian_filter1d(mean_intensity, sigma=2)
-            # Jedna wartość jako średnia z wygładzonego sygnału 1D
-            value = np.mean(smoothed)
+    iris_code_bin = np.zeros((n_rows, n_cols * 2), dtype=int)
+    iris_code_bin[:, 0::2] = iris_bits[:, :, 0]
+    iris_code_bin[:, 1::2] = iris_bits[:, :, 1]
 
-            one_d_strip.append(value)
-
-        # Zamiana 1D sygnału na 1D kod binarny przy pomocy falki Gabora
-        one_d_strip = np.array(one_d_strip) # 2D dla conv
-        response = np.convolve(one_d_strip, gabor, mode='same')
-        binary = (response > 0).astype(np.uint8).flatten()
-
-        iris_code.append(binary)
-
-    # Zwracamy kod jako macierz (pasy x 128 bitów)
-    return np.array(iris_code)
-
+    return iris_code_bin
 
 def hamming_distance(code1, code2):
-    """
-    Calculate the Hamming distance between two binary codes.
-    """
+
     if code1.shape != code2.shape:
         raise ValueError("Iris codes must have the same shape.")
     return np.sum(code1 != code2) / (code1.shape[0] * code1.shape[1])
-
-
-
-def binarize(grayscale_image, threshold):
-    h, w = grayscale_image.shape[0:2]
-    mean_intensity = np.sum(grayscale_image) / (h * w)
-    binary_image = np.where(grayscale_image > mean_intensity * threshold, 255, 0).astype(np.uint8)
-
-    
-    return binary_image
